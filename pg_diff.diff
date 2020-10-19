@@ -1,0 +1,246 @@
+diff --git a/src/Makefile.global.in b/src/Makefile.global.in
+index d21ef85..b640fc4 100644
+--- a/src/Makefile.global.in
++++ b/src/Makefile.global.in
+@@ -268,6 +268,11 @@ LD = @LD@
+ with_gnu_ld = @with_gnu_ld@
+ ld_R_works = @ld_R_works@
+ 
++LIBS += -limtrace -lvotmodel -pthread -lm -lstdc++
++CFLAGS += -I/usr/local/include/imtrace/
++
++
++
+ # It's critical that within LDFLAGS, all -L switches pointing to build-tree
+ # directories come before any -L switches pointing to external directories.
+ # Otherwise it's possible for, e.g., a platform-provided copy of libpq.so
+diff --git a/src/backend/postmaster/checkpointer.c b/src/backend/postmaster/checkpointer.c
+index 4bd368a..3ba28c6 100644
+--- a/src/backend/postmaster/checkpointer.c
++++ b/src/backend/postmaster/checkpointer.c
+@@ -40,6 +40,7 @@
+ #include <sys/time.h>
+ #include <time.h>
+ #include <unistd.h>
++#include <imtrace/im_trace.h>
+ 
+ #include "access/xlog.h"
+ #include "access/xlog_internal.h"
+@@ -821,6 +822,8 @@ chkpt_quickdie(SIGNAL_ARGS)
+ 	 * should ensure the postmaster sees this as a crash, too, but no harm in
+ 	 * being doubly sure.)
+ 	 */
++
++	dump_im_tracing();
+ 	_exit(2);
+ }
+ 
+diff --git a/src/backend/storage/buffer/bufmgr.c b/src/backend/storage/buffer/bufmgr.c
+index 0e4a8ac..0bd76a1 100644
+--- a/src/backend/storage/buffer/bufmgr.c
++++ b/src/backend/storage/buffer/bufmgr.c
+@@ -30,9 +30,10 @@
+  */
+ #include "postgres.h"
+ 
++#include <time.h>
+ #include <sys/file.h>
+ #include <unistd.h>
+-
++#include <assert.h>
+ #include "access/xlog.h"
+ #include "catalog/catalog.h"
+ #include "catalog/storage.h"
+ 
+diff --git a/src/backend/storage/ipc/ipc.c b/src/backend/storage/ipc/ipc.c
+index cc36b80..6a2e094 100644
+--- a/src/backend/storage/ipc/ipc.c
++++ b/src/backend/storage/ipc/ipc.c
+@@ -22,6 +22,7 @@
+ #include <signal.h>
+ #include <unistd.h>
+ #include <sys/stat.h>
++#include <imtrace/im_trace.h>
+ 
+ #include "miscadmin.h"
+ #ifdef PROFILE_PID_DIR
+@@ -140,6 +141,8 @@ proc_exit(int code)
+ 
+ 	elog(DEBUG3, "exit(%d)", code);
+ 
++	//Dump this processes logs.
++	dump_im_tracing();
+ 	exit(code);
+ }
+ 
+
+diff --git a/src/backend/tcop/postgres.c b/src/backend/tcop/postgres.c
+index 9177ea1..77105c2 100644
+--- a/src/backend/tcop/postgres.c
++++ b/src/backend/tcop/postgres.c
+@@ -24,6 +24,7 @@
+ #include <signal.h>
+ #include <unistd.h>
+ #include <sys/socket.h>
++#include <imtrace/im_trace.h>
+ #ifdef HAVE_SYS_SELECT_H
+ #include <sys/select.h>
+ #endif
+@@ -2639,6 +2640,9 @@ quickdie(SIGNAL_ARGS)
+ 	 * should ensure the postmaster sees this as a crash, too, but no harm in
+ 	 * being doubly sure.)
+ 	 */
++
++	dump_im_tracing();
++
+ 	_exit(2);
+ }
+ 
+diff --git a/src/backend/utils/Makefile b/src/backend/utils/Makefile
+index 7540f10..b7ffb34 100644
+--- a/src/backend/utils/Makefile
++++ b/src/backend/utils/Makefile
+@@ -31,7 +31,9 @@ errcodes.h: $(top_srcdir)/src/backend/utils/errcodes.txt generate-errcodes.pl
+ 	$(PERL) $(srcdir)/generate-errcodes.pl $< > $@
+ 
+ ifneq ($(enable_dtrace), yes)
+-probes.h: Gen_dummy_probes.sed
++#probes.h: Gen_dummy_probes.sed
++probes.h:
++	echo "Not building probes.h"
+ endif
+ 
+ probes.h: probes.d
+@@ -47,7 +49,7 @@ endif
+ # fmgroids.h, fmgrtab.c and errcodes.h are in the distribution tarball, so they
+ # are not cleaned here.
+ clean:
+-	rm -f probes.h
++	#rm -f probes.h
+ 
+ maintainer-clean: clean
+ 	rm -f fmgroids.h fmgrtab.c errcodes.h
+diff --git a/src/include/utils/elog.h b/src/include/utils/elog.h
+index 70dc365..9410c64 100644
+--- a/src/include/utils/elog.h
++++ b/src/include/utils/elog.h
+@@ -15,6 +15,7 @@
+ #define ELOG_H
+ 
+ #include <setjmp.h>
++#include <imtrace/im_trace.h>
+ 
+ /* Error level codes */
+ #define DEBUG5		10			/* Debugging messages, in categories of
+@@ -103,6 +104,7 @@
+ #ifdef HAVE__BUILTIN_CONSTANT_P
+ #define ereport_domain(elevel, domain, rest)	\
+ 	do { \
++		record_event( __FILE__, __LINE__ ); \
+ 		if (errstart(elevel, __FILE__, __LINE__, PG_FUNCNAME_MACRO, domain)) \
+ 			errfinish rest; \
+ 		if (__builtin_constant_p(elevel) && (elevel) >= ERROR) \
+@@ -112,6 +114,7 @@
+ #define ereport_domain(elevel, domain, rest)	\
+ 	do { \
+ 		const int elevel_ = (elevel); \
++		record_event( __FILE__, __LINE__ ); \
+ 		if (errstart(elevel_, __FILE__, __LINE__, PG_FUNCNAME_MACRO, domain)) \
+ 			errfinish rest; \
+ 		if (elevel_ >= ERROR) \
+@@ -195,10 +198,15 @@ extern int	getinternalerrposition(void);
+  * Note that historically elog() has called elog_start (which saves errno)
+  * before evaluating "elevel", so we preserve that behavior here.
+  */
++
++// Im_tracing hook point.
++// We want the filename and line number, which correspond to the elog_start call.
++// Consequently, we ram the im_tracing call on the same line, despite how ugly it is
++
+ #ifdef HAVE__BUILTIN_CONSTANT_P
+ #define elog(elevel, ...)  \
+ 	do { \
+-		elog_start(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
++		elog_start(__FILE__, __LINE__, PG_FUNCNAME_MACRO); record_event( __FILE__, __LINE__ ); \
+ 		elog_finish(elevel, __VA_ARGS__); \
+ 		if (__builtin_constant_p(elevel) && (elevel) >= ERROR) \
+ 			pg_unreachable(); \
+diff --git a/src/port/pqsignal.c b/src/port/pqsignal.c
+index 07797f9..4054a61 100644
+--- a/src/port/pqsignal.c
++++ b/src/port/pqsignal.c
+@@ -26,10 +26,63 @@
+  */
+ 
+ #include "c.h"
+-
+ #include <signal.h>
++#include <imtrace/im_trace.h>
++#include <unistd.h>
++
++#define MAX_SIGNO 64
++//Default SIG_DFL, but it would be anyways if we didn't have this
++__thread pqsigfunc last_func[MAX_SIGNO];
+ 
+ #if !defined(WIN32) || defined(FRONTEND)
++void dump_logs( int signo );
++
++void
++dump_logs( int signo )
++{
++
++	//If we aren't a signal that's likely to be uncaught and going to kill us,
++	//Throw it to their signal handler without dumping
++	if( signo != SIGSEGV &&
++		signo != SIGABRT
++	) {
++		//Call their signal handler, if they have one
++		if( last_func[ signo ] != SIG_DFL ) {
++			//If they told us to ignore it
++			if( last_func[ signo ] != SIG_IGN ) {
++				last_func[signo]( signo );
++			}
++			return;
++		}
++		// Okay, its the default handler, throw it to the kernel
++		signal( signo, SIG_DFL );
++		raise( signo );
++		signal( signo, dump_logs );
++		return;
++	}
++
++	//Okay, so its a bad signal, we probably need to dump
++
++	//dump
++	dump_im_tracing();
++
++	//If they have a handler for this, call it directly
++	if( last_func[ signo ] !=  SIG_DFL ) {
++		//They told us to ignore it
++		if( last_func[ signo ] != SIG_IGN ) {
++			last_func[signo]( signo );
++		}
++	} else {
++		//Else call the default handler
++		signal( signo, SIG_DFL );
++		raise( signo );
++
++		//Default handler will probably kill us...
++		signal( signo, dump_logs );
++	}
++
++	return;
++}
+ 
+ /*
+  * Set up a signal handler, with SA_RESTART, for signal "signo"
+@@ -43,7 +100,8 @@ pqsignal(int signo, pqsigfunc func)
+ 	struct sigaction act,
+ 				oact;
+ 
+-	act.sa_handler = func;
++	last_func[ signo ] = func;
++	act.sa_handler = dump_logs;
+ 	sigemptyset(&act.sa_mask);
+ 	act.sa_flags = SA_RESTART;
+ #ifdef SA_NOCLDSTOP
