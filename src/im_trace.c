@@ -494,10 +494,8 @@ int get_event_index( const char *pathless_fname, int line_number ) {
 }
 
 uint64_t get_current_nsec() {
-    int ret = 0;
     struct timespec ts;
-    ret = clock_gettime( CLOCK_REALTIME, &ts );
-    assert( ret == 0 );
+    clock_gettime( CLOCK_REALTIME, &ts );
     uint64_t now = ts.tv_sec * NANO + ts.tv_nsec;
     return now;
 }
