@@ -13,6 +13,8 @@ points somewhat (See the changes we made in pg_diff.diff).
 
 After running this script, you can just run PostgreSQL as normal. The default config we used is [here](https://github.com/bglasber/sentinel_vldb/blob/main/sentinel_postgresql.conf).
 
+As many PostgreSQL events are captured by DTrace probes, we have also provided the probes.h file we used to integrate them with Sentinel. After building PostgreSQL once, overwrite their probes.h file with the one we've provided and rebuild PostgreSQL to capture these events.
+
 ## Obtaining and Comparing Results
 
 After you run an experiment against PostgreSQL, shut it down (/usr/local/pgsql/bin/pg_ctl -D ... stop). Once PostgreSQL stops, Sentinel will dump all of its tracing to /tmp.
